@@ -1110,6 +1110,7 @@ class DtermPseudoterminal implements vscode.Pseudoterminal {
         initialDims: { cols: number; rows: number },
         bootstrap: Promise<BootstrapResult> | undefined,
         isReattach: boolean,
+        private readonly initialCwd?: string,
     ) {
         this.cols = initialDims.cols;
         this.rows = initialDims.rows;
@@ -1226,7 +1227,6 @@ class DtermPseudoterminal implements vscode.Pseudoterminal {
             };
         } else {
             const cfg = shellConfig();
-            const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
             // process.argv = [nodeBinary, stubScript, ...shellArgs]. The
             // stub's argv[0] is the Node interpreter path and argv[1] is
             // the stub script path (or its symlink); slice past both to
@@ -1280,7 +1280,7 @@ class DtermPseudoterminal implements vscode.Pseudoterminal {
                 name: this.sessionName,
                 cols: this.cols,
                 rows: this.rows,
-                cwd,
+                cwd: this.initialCwd,
                 env,
                 shell: resolveShellBinary(cfg.shell),
                 shellArgs: capturedArgs.length > 0 ? capturedArgs : cfg.shellArgs,
@@ -1522,8 +1522,9 @@ function buildPseudoOptions(
     bootstrap: Promise<BootstrapResult> | undefined,
     isReattach: boolean,
     shellIntegrationNonce: string | undefined,
+    cwd?: string,
 ): vscode.ExtensionTerminalOptions {
-    const pty = new DtermPseudoterminal(sessionName, label, initialDims, bootstrap, isReattach);
+    const pty = new DtermPseudoterminal(sessionName, label, initialDims, bootstrap, isReattach, cwd);
     ptyBySession.set(sessionName, pty);
     return {
         // Initial name carries the marker + tag-encoded session ID from
@@ -2419,6 +2420,36 @@ function resolveInstance(ctx: vscode.ExtensionContext): string {
     return '';
 }
 
+async function createNewTerminalOptions(cwd: string | undefined): Promise<vscode.ExtensionTerminalOptions> {
+    const allocated = await allocateSessionName();
+    const inst = instanceId();
+    const noWsPrefix = inst ? `vscode-${inst}-noworkspace` : 'vscode-noworkspace';
+    const sessionName = allocated ?? `${noWsPrefix}-${process.pid}-${Date.now()}`;
+    if (!allocated) log(`newTerminal: allocating fallback session ${sessionName}`);
+    else log(`newTerminal: allocated session ${sessionName}`);
+    pendingFocus.add(sessionName);
+    // Mint a single shell-integration nonce for the session and
+    // pass it to both the bootstrap stub (VS Code will inject it
+    // as VSCODE_NONCE in the stub's env, which the stub captures
+    // and forwards to the daemon-side shell) and the visible
+    // Pseudoterminal (so its parser validates OSC 633 sequences
+    // emitted by the daemon-side shell). Reattach uses a
+    // different code path that reads VSCODE_NONCE back from the
+    // daemon's stored env.
+    const shellIntegrationNonce = crypto.randomUUID();
+    // Bootstrap runs in parallel with VS Code rendering the visible
+    // terminal. Returns immediately so the user sees the terminal
+    // within tens of ms; the Pseudoterminal queues input until the
+    // bootstrap+daemon attach completes.
+    const bootstrapPromise = bootstrapShell(sessionName, cwd, shellIntegrationNonce).catch(e => {
+        log(`newTerminal: bootstrap failed for ${sessionName}: ${(e as Error).message}`);
+        throw e;
+    });
+    return buildPseudoOptions(
+        sessionName, undefined, undefined, { cols: 80, rows: 24 }, bootstrapPromise, false, shellIntegrationNonce, cwd,
+    );
+}
+
 export function activate(ctx: vscode.ExtensionContext): void {
     activeCtx = ctx;
     // Stamp the env BEFORE any path helper runs so socket/log/agent paths and
@@ -2453,33 +2484,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         vscode.window.registerTerminalProfileProvider(PROFILE_ID, {
             async provideTerminalProfile() {
                 const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-                const allocated = await allocateSessionName();
-                const inst = instanceId();
-                const noWsPrefix = inst ? `vscode-${inst}-noworkspace` : 'vscode-noworkspace';
-                const sessionName = allocated ?? `${noWsPrefix}-${process.pid}-${Date.now()}`;
-                if (!allocated) log(`profile: allocating fallback session ${sessionName}`);
-                else log(`profile: allocated session ${sessionName}`);
-                pendingFocus.add(sessionName);
-                // Mint a single shell-integration nonce for the session and
-                // pass it to both the bootstrap stub (VS Code will inject it
-                // as VSCODE_NONCE in the stub's env, which the stub captures
-                // and forwards to the daemon-side shell) and the visible
-                // Pseudoterminal (so its parser validates OSC 633 sequences
-                // emitted by the daemon-side shell). Reattach uses a
-                // different code path that reads VSCODE_NONCE back from the
-                // daemon's stored env.
-                const shellIntegrationNonce = crypto.randomUUID();
-                // Bootstrap runs in parallel with VS Code rendering the visible
-                // terminal. Returns immediately so the user sees the terminal
-                // within tens of ms; the Pseudoterminal queues input until the
-                // bootstrap+daemon attach completes.
-                const bootstrapPromise = bootstrapShell(sessionName, cwd, shellIntegrationNonce).catch(e => {
-                    log(`profile: bootstrap failed for ${sessionName}: ${(e as Error).message}`);
-                    throw e;
-                });
-                return new vscode.TerminalProfile(
-                    buildPseudoOptions(sessionName, undefined, undefined, { cols: 80, rows: 24 }, bootstrapPromise, /*isReattach=*/false, shellIntegrationNonce),
-                );
+                return new vscode.TerminalProfile(await createNewTerminalOptions(cwd));
             },
         }),
     );
@@ -2619,6 +2624,17 @@ export function activate(ctx: vscode.ExtensionContext): void {
     );
 
     ctx.subscriptions.push(
+        vscode.commands.registerCommand('dterm.newTerminal', async () => {
+            const folders = vscode.workspace.workspaceFolders ?? [];
+            const folder = folders.length > 1
+                ? await vscode.window.showWorkspaceFolderPick({
+                    placeHolder: 'Select a workspace folder for the new dterm terminal',
+                })
+                : folders[0];
+            if (folders.length > 1 && !folder) return;
+            const terminal = vscode.window.createTerminal(await createNewTerminalOptions(folder?.uri.fsPath));
+            terminal.show();
+        }),
         vscode.commands.registerCommand('dterm.reconnect', () =>
             reconnectAll(ctx, { interactive: true }),
         ),

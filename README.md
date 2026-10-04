@@ -21,7 +21,9 @@ Unlike VS Code's built-in terminal persistence, dterm sessions survive VS Code S
 
 ## Usage
 
-After installation, open a terminal via the terminal panel's "+" dropdown → **dterm**. To make dterm your default profile:
+After installation, run **dterm: New terminal** from the Command Palette. In a multi-root workspace, pick the folder where the new shell should start. With a single folder, that folder is used automatically. You do not need to make dterm your default terminal profile.
+
+You can also open a terminal via the terminal panel's "+" dropdown → **dterm**. For explicit folder selection in multi-root workspaces, use the Command Palette command above. To make dterm your default profile:
 
 ```jsonc
 "terminal.integrated.defaultProfile.linux": "dterm",
@@ -44,6 +46,7 @@ This stops VS Code from spawning an unwanted default shell in the terminal panel
 
 | Command | Description |
 | --- | --- |
+| `dterm: New terminal` | Create a new persistent terminal without changing the default profile. Prompts for its starting folder in multi-root workspaces. |
 | `dterm: Reattach all workspace sessions` | Reconnect VS Code terminals to live daemon sessions for the current workspace. |
 | `dterm: Resync active terminal` | Re-render the current terminal — useful if output looks garbled after concurrent clients edited it. |
 | `dterm: List sessions` | Show all live sessions across workspaces. |

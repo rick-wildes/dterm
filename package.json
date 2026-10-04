@@ -44,6 +44,10 @@
     },
     "commands": [
       {
+        "command": "dterm.newTerminal",
+        "title": "dterm: New terminal"
+      },
+      {
         "command": "dterm.reconnect",
         "title": "dterm: Reattach all workspace sessions"
       },
@@ -149,6 +153,7 @@
   },
   "scripts": {
     "compile": "tsc -p . && node scripts/postcompile.js",
+    "test": "npm run compile && node --test scripts/new-terminal.test.js",
     "watch": "tsc -p . -w",
     "clean-staged-prebuild": "rm -rf node_modules/node-pty/prebuilds/linux-x64 node_modules/node-pty/prebuilds/linux-arm64",
     "vscode:prepublish": "npm run compile"
